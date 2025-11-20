@@ -79,6 +79,7 @@ type http3Conn interface {
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
 	ConnectionState() quic.ConnectionState
+	ConnectionStats() quic.ConnectionStats
 	Context() context.Context
 }
 
@@ -457,4 +458,8 @@ func (s *Session) SessionState() SessionState {
 		ConnectionState:     s.conn.ConnectionState(),
 		ApplicationProtocol: s.applicationProtocol,
 	}
+}
+
+func (s *Session) ConnectionStats() quic.ConnectionStats {
+	return s.conn.ConnectionStats()
 }
