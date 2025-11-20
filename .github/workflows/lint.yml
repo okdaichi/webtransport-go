@@ -1,3 +1,6 @@
+name: Lint
+permissions:
+  contents: read
 on: [push, pull_request]
 
 jobs:
@@ -5,12 +8,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: [ "1.23.x", "1.24.x" ]
+        go: [ "1.24.x", "1.25.x" ]
     runs-on: ubuntu-latest
     name: Lint
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
       - name: Check for //go:build ignore in .go files
@@ -22,18 +25,10 @@ jobs:
           fi
       - name: Check that go.mod is tidied
         if: success() || failure() # run this step even if the previous one failed
-        run: |
-          cp go.mod go.mod.orig
-          cp go.sum go.sum.orig
-          go mod tidy
-          diff go.mod go.mod.orig
-          diff go.sum go.sum.orig
-      - name: Run code generators
-        if: success() || failure() # run this step even if the previous one failed
-        run: .github/workflows/go-generate.sh
+        run: go mod tidy -diff
       - name: golangci-lint
         if: success() || failure() # run this step even if the previous one failed
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           args: --timeout=3m
           version: v2.1.6

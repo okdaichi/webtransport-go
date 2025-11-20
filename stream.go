@@ -18,8 +18,8 @@ type quicSendStream interface {
 	io.WriteCloser
 	StreamID() quic.StreamID
 	CancelWrite(quic.StreamErrorCode)
-	SetWriteDeadline(time.Time) error
 	Context() context.Context
+	SetWriteDeadline(time.Time) error
 }
 
 var (
@@ -98,16 +98,16 @@ func (s *SendStream) Close() error {
 	return maybeConvertStreamError(s.str.Close())
 }
 
+func (s *SendStream) Context() context.Context {
+	return s.str.Context()
+}
+
 func (s *SendStream) SetWriteDeadline(t time.Time) error {
 	return maybeConvertStreamError(s.str.SetWriteDeadline(t))
 }
 
 func (s *SendStream) StreamID() quic.StreamID {
 	return s.str.StreamID()
-}
-
-func (s *SendStream) Context() context.Context {
-	return s.str.Context()
 }
 
 type ReceiveStream struct {
