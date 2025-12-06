@@ -8,7 +8,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 )
 
-replace github.com/quic-go/quic-go => github.com/OkutaniDaichi0106/quic-go v0.0.0-20251120033224-9bbaddbace83
+replace github.com/quic-go/quic-go => github.com/okdaichi/quic-go v0.0.0-20251120033224-9bbaddbace83
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
