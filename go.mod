@@ -1,4 +1,4 @@
-module github.com/OkutaniDaichi0106/webtransport-go
+module github.com/quic-go/webtransport-go
 
 go 1.24
 
