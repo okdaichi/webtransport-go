@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/dunglas/httpsfv v1.1.0
-	github.com/quic-go/quic-go v0.56.0
+	github.com/quic-go/quic-go v0.57.1
 	github.com/stretchr/testify v1.11.1
 )
 
