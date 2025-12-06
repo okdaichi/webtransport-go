@@ -1,4 +1,4 @@
-module github.com/OkutaniDaichi0106/webtransport-go
+module github.com/quic-go/webtransport-go
 
 go 1.24
 
@@ -7,6 +7,8 @@ require (
 	github.com/quic-go/quic-go v0.57.1
 	github.com/stretchr/testify v1.11.1
 )
+
+replace github.com/quic-go/quic-go => github.com/okdaichi/quic-go v0.0.0-20251120033224-9bbaddbace83
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
