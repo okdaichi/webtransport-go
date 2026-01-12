@@ -18,6 +18,7 @@ type quicSendStream interface {
 	CancelWrite(quic.StreamErrorCode)
 	Context() context.Context
 	SetWriteDeadline(time.Time) error
+	SetReliableBoundary()
 }
 
 var (
@@ -44,6 +45,9 @@ type SendStream struct {
 	// Might be initialized to nil if this sendStream is part of an incoming bidirectional stream.
 	streamHdr   []byte
 	streamHdrMu sync.Mutex
+	// Set to true when a goroutine is spawned to send the header asynchronously.
+	// This only happens if the stream is closed / reset immediately after creation.
+	sendingHdrAsync bool
 
 	onClose func() // to remove the stream from the streamsMap
 
@@ -116,16 +120,16 @@ func (s *SendStream) handleSessionGoneError() error {
 }
 
 func (s *SendStream) write(b []byte) (int, error) {
-	if err := s.maybeSendStreamHeader(); err != nil {
+	s.streamHdrMu.Lock()
+	err := s.maybeSendStreamHeader()
+	s.streamHdrMu.Unlock()
+	if err != nil {
 		return 0, err
 	}
 	return s.str.Write(b)
 }
 
 func (s *SendStream) maybeSendStreamHeader() error {
-	s.streamHdrMu.Lock()
-	defer s.streamHdrMu.Unlock()
-
 	if len(s.streamHdr) == 0 {
 		return nil
 	}
@@ -133,6 +137,7 @@ func (s *SendStream) maybeSendStreamHeader() error {
 	if n > 0 {
 		s.streamHdr = s.streamHdr[n:]
 	}
+	s.str.SetReliableBoundary()
 	if err != nil {
 		return err
 	}
@@ -145,6 +150,32 @@ func (s *SendStream) maybeSendStreamHeader() error {
 // Write will unblock immediately, and future calls to Write will fail.
 // When called multiple times it is a no-op.
 func (s *SendStream) CancelWrite(e StreamErrorCode) {
+	// if a Goroutine is already sending the header, return immediately
+	s.streamHdrMu.Lock()
+	if s.sendingHdrAsync {
+		s.streamHdrMu.Unlock()
+		return
+	}
+
+	if len(s.streamHdr) > 0 {
+		// Sending the stream header might block if we are blocked by flow control.
+		// Send a stream header async so that CancelWrite can return immediately.
+		s.sendingHdrAsync = true
+		streamHdr := s.streamHdr
+		s.streamHdr = nil
+		s.streamHdrMu.Unlock()
+
+		go func() {
+			s.SetWriteDeadline(time.Time{})
+			_, _ = s.str.Write(streamHdr)
+			s.str.SetReliableBoundary()
+			s.str.CancelWrite(webtransportCodeToHTTPCode(e))
+			s.onClose()
+		}()
+		return
+	}
+	s.streamHdrMu.Unlock()
+
 	s.str.CancelWrite(webtransportCodeToHTTPCode(e))
 	s.onClose()
 }
@@ -160,9 +191,32 @@ func (s *SendStream) closeWithSession(err error) {
 // Close closes the write-direction of the stream.
 // Future calls to Write are not permitted after calling Close.
 func (s *SendStream) Close() error {
-	if err := s.maybeSendStreamHeader(); err != nil {
-		return err
+	// if a Goroutine is already sending the header, return immediately
+	s.streamHdrMu.Lock()
+	if s.sendingHdrAsync {
+		s.streamHdrMu.Unlock()
+		return nil
 	}
+
+	if len(s.streamHdr) > 0 {
+		// Sending the stream header might block if we are blocked by flow control.
+		// Send a stream header async so that CancelWrite can return immediately.
+		s.sendingHdrAsync = true
+		streamHdr := s.streamHdr
+		s.streamHdr = nil
+		s.streamHdrMu.Unlock()
+
+		go func() {
+			s.SetWriteDeadline(time.Time{})
+			_, _ = s.str.Write(streamHdr)
+			s.str.SetReliableBoundary()
+			_ = s.str.Close()
+			s.onClose()
+		}()
+		return nil
+	}
+	s.streamHdrMu.Unlock()
+
 	s.onClose()
 	return maybeConvertStreamError(s.str.Close())
 }
