@@ -36,7 +36,8 @@ type serverQUICConn struct {
 	sessionManager *sessionManager
 }
 
-func (s *Server) configureHTTP3Server(h3 *http3.Server) {
+func (s *Server) configureHTTP3Server() {
+	h3 := s.H3
 	if h3.AdditionalSettings == nil {
 		h3.AdditionalSettings = make(map[uint64]uint64, 2)
 	}
@@ -116,7 +117,7 @@ func (s *Server) init() error {
 	}
 
 	s.conns = make(map[*quic.Conn]*sessionManager)
-	s.configureHTTP3Server(s.H3)
+	s.configureHTTP3Server()
 
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 	if s.CheckOrigin == nil {
