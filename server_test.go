@@ -31,17 +31,17 @@ func scaleDuration(d time.Duration) time.Duration {
 }
 
 func TestUpgradeFailures(t *testing.T) {
-	var s webtransport.Server
+	var u webtransport.Upgrader
 
 	t.Run("wrong request method", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/webtransport", nil)
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
 		require.EqualError(t, err, "expected CONNECT request, got GET")
 	})
 
 	t.Run("wrong protocol", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
 		require.EqualError(t, err, "unexpected protocol: HTTP/1.1")
 	})
 }
@@ -75,7 +75,6 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 
 	cconn, err := quic.DialAddr(
@@ -138,7 +137,6 @@ func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 
 	cconn, err := quic.DialAddr(
@@ -197,9 +195,14 @@ func TestServerSettingsCheck(t *testing.T) {
 		ReorderingTimeout: timeout,
 	}
 	errChan := make(chan error, 1)
+	upgrader := webtransport.Upgrader{
+		ApplicationProtocols: s.ApplicationProtocols,
+		ReorderingTimeout:    s.ReorderingTimeout,
+		CheckOrigin:          s.CheckOrigin,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
-		_, err := s.Upgrade(w, r)
+		_, err := upgrader.Upgrade(w, r)
 		w.WriteHeader(http.StatusNotImplemented)
 		errChan <- err
 	})
@@ -207,7 +210,6 @@ func TestServerSettingsCheck(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 
 	cconn, err := quic.DialAddr(

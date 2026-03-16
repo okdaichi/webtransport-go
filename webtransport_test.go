@@ -31,7 +31,6 @@ func runServer(t *testing.T, s *webtransport.Server) (addr *net.UDPAddr, close f
 	udpConn, err := net.ListenUDP("udp", laddr)
 	require.NoError(t, err)
 
-	webtransport.ConfigureHTTP3Server(s.H3)
 	servErr := make(chan error, 1)
 	go func() {
 		servErr <- s.Serve(udpConn)
@@ -97,9 +96,14 @@ func sendDataAndCheckEcho(t *testing.T, sess *webtransport.Session) {
 
 func addHandler(t *testing.T, s *webtransport.Server, connHandler func(*webtransport.Session)) {
 	t.Helper()
+	upgrader := webtransport.Upgrader{
+		ApplicationProtocols: s.ApplicationProtocols,
+		ReorderingTimeout:    s.ReorderingTimeout,
+		CheckOrigin:          s.CheckOrigin,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			t.Logf("upgrading failed: %s", err)
 			w.WriteHeader(404) // TODO: better error code
@@ -146,6 +150,42 @@ func TestApplicationProtocolNegotiation(t *testing.T) {
 	t.Run("no server protocols", func(t *testing.T) {
 		testApplicationProtocolNegotiation(t, []string{"foo", "bar"}, []string{}, "")
 	})
+}
+
+func TestUpgraderIntegration(t *testing.T) {
+	s := &webtransport.Server{
+		H3: &http3.Server{
+			TLSConfig: webtransport.TLSConf,
+			QUICConfig: &quic.Config{
+				EnableDatagrams:                  true,
+				EnableStreamResetPartialDelivery: true,
+				Tracer:                           qlog.DefaultConnectionTracer,
+			},
+		},
+	}
+	defer s.Close()
+	addHandler(t, s, newEchoHandler(t))
+
+	addr, closeServer := runServer(t, s)
+	defer closeServer()
+
+	d := webtransport.Dialer{
+		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+		QUICConfig: &quic.Config{
+			EnableDatagrams:                  true,
+			EnableStreamResetPartialDelivery: true,
+			Tracer:                           qlog.DefaultConnectionTracer,
+		},
+	}
+	defer d.Close()
+
+	url := fmt.Sprintf("https://localhost:%d/webtransport", addr.Port)
+	rsp, sess, err := d.Dial(context.Background(), url, nil)
+	require.NoError(t, err)
+	defer sess.CloseWithError(0, "")
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+
+	sendDataAndCheckEcho(t, sess)
 }
 
 func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverProtocols []string, expected string) {
@@ -708,11 +748,16 @@ func TestSessionContextValues(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
+	upgrader := webtransport.Upgrader{
+		ApplicationProtocols: s.ApplicationProtocols,
+		ReorderingTimeout:    s.ReorderingTimeout,
+		CheckOrigin:          s.CheckOrigin,
+	}
 	serverSessChan := make(chan *webtransport.Session, 1)
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), contextKey, serverValue)
 		r = r.WithContext(ctx)
-		conn, err := s.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			t.Logf("upgrading failed: %s", err)
 			w.WriteHeader(404)
