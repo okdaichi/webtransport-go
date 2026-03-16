@@ -89,6 +89,9 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 	if !ok || conn == nil || conn.Conn == nil {
 		return nil, errors.New("webtransport: missing QUIC connection")
 	}
+	if conn.sessionManager == nil {
+		return nil, errors.New("webtransport: session manager unavailable (request context not initialized by webtransport.Server; use Server.Serve / ListenAndServe / ServeQUICConn)")
+	}
 
 	selectedProtocol := u.selectProtocol(r.Header[http.CanonicalHeaderKey(wtAvailableProtocolsHeader)])
 
@@ -115,13 +118,11 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 		}
 		w.Header().Add(wtProtocolHeader, v)
 	}
-	w.WriteHeader(http.StatusOK)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, errors.New("webtransport: response writer doesn't implement http.Flusher")
 	}
-	flusher.Flush()
 
 	httpStreamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
@@ -130,9 +131,8 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 	str := httpStreamer.HTTPStream()
 	sessID := sessionID(str.StreamID())
 
-	if conn.sessionManager == nil {
-		return nil, errors.New("webtransport: session manager resolver unavailable")
-	}
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
 	sess := newSession(context.WithoutCancel(r.Context()), sessID, conn.Conn, str, selectedProtocol)
 	conn.sessionManager.AddSession(sessID, sess)
