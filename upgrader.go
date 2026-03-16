@@ -116,7 +116,7 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal selected protocol: %w", err)
 		}
-		w.Header().Add(wtProtocolHeader, v)
+		w.Header().Set(wtProtocolHeader, v)
 	}
 
 	flusher, ok := w.(http.Flusher)
