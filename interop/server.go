@@ -101,14 +101,11 @@ func RunInteropServer() error {
 		QUICConfig: quicConf,
 	}
 	s := &webtransport.Server{
-		ApplicationProtocols: protocols,
-		H3:                   h3Server,
-		CheckOrigin:          func(*http.Request) bool { return true },
+		H3: h3Server,
 	}
 	upgrader := webtransport.Upgrader{
-		ApplicationProtocols: s.ApplicationProtocols,
-		ReorderingTimeout:    s.ReorderingTimeout,
-		CheckOrigin:          s.CheckOrigin,
+		ApplicationProtocols: protocols,
+		CheckOrigin:          func(*http.Request) bool { return true },
 	}
 	defer s.Close()
 
