@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 )
 
 const (
