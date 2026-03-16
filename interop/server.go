@@ -100,11 +100,15 @@ func RunInteropServer() error {
 		},
 		QUICConfig: quicConf,
 	}
-	webtransport.ConfigureHTTP3Server(h3Server)
 	s := &webtransport.Server{
 		ApplicationProtocols: protocols,
 		H3:                   h3Server,
 		CheckOrigin:          func(*http.Request) bool { return true },
+	}
+	upgrader := webtransport.Upgrader{
+		ApplicationProtocols: s.ApplicationProtocols,
+		ReorderingTimeout:    s.ReorderingTimeout,
+		CheckOrigin:          s.CheckOrigin,
 	}
 	defer s.Close()
 
@@ -119,7 +123,7 @@ func RunInteropServer() error {
 	}
 	for _, ep := range endpoints {
 		handler := func(w http.ResponseWriter, r *http.Request) {
-			c, err := s.Upgrade(w, r)
+			c, err := upgrader.Upgrade(w, r)
 			if err != nil {
 				logger.Error("upgrading failed", "endpoint", ep, "err", err)
 				w.WriteHeader(500)

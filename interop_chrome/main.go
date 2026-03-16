@@ -51,13 +51,14 @@ func main() {
 			Addr:      "localhost:12345",
 			Handler:   wmux,
 		},
+	}
+	upgrader := webtransport.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-	webtransport.ConfigureHTTP3Server(s.H3)
 	defer s.Close()
 
 	wmux.HandleFunc("/unidirectional", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			log.Printf("upgrading failed: %s", err)
 			w.WriteHeader(500)
