@@ -561,7 +561,7 @@ func TestCheckOrigin(t *testing.T) {
 	for _, tc := range tcs {
 		t.Run(tc.Name, func(t *testing.T) {
 			s := &webtransport.Server{
-					H3: &http3.Server{TLSConfig: webtransport.TLSConf},
+				H3: &http3.Server{TLSConfig: webtransport.TLSConf},
 			}
 			defer s.Close()
 			addHandler(t, s, webtransport.Upgrader{CheckOrigin: tc.CheckOrigin}, newEchoHandler(t))
@@ -741,7 +741,7 @@ func TestSessionContextValues(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-		upgrader := webtransport.Upgrader{}
+	upgrader := webtransport.Upgrader{}
 	serverSessChan := make(chan *webtransport.Session, 1)
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), contextKey, serverValue)
