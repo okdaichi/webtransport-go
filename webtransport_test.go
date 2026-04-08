@@ -54,7 +54,7 @@ func establishSession(t *testing.T, handler func(*webtransport.Session)) (sess *
 			},
 		},
 	}
-	addHandler(t, s, handler)
+	addHandler(t, s, webtransport.Upgrader{}, handler)
 
 	addr, closeServer := runServer(t, s)
 	d := webtransport.Dialer{
@@ -94,13 +94,8 @@ func sendDataAndCheckEcho(t *testing.T, sess *webtransport.Session) {
 	require.Equal(t, data, reply)
 }
 
-func addHandler(t *testing.T, s *webtransport.Server, connHandler func(*webtransport.Session)) {
+func addHandler(t *testing.T, s *webtransport.Server, upgrader webtransport.Upgrader, connHandler func(*webtransport.Session)) {
 	t.Helper()
-	upgrader := webtransport.Upgrader{
-		ApplicationProtocols: s.ApplicationProtocols,
-		ReorderingTimeout:    s.ReorderingTimeout,
-		CheckOrigin:          s.CheckOrigin,
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r)
@@ -164,7 +159,7 @@ func TestUpgraderIntegration(t *testing.T) {
 		},
 	}
 	defer s.Close()
-	addHandler(t, s, newEchoHandler(t))
+	addHandler(t, s, webtransport.Upgrader{}, newEchoHandler(t))
 
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
@@ -190,7 +185,6 @@ func TestUpgraderIntegration(t *testing.T) {
 
 func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverProtocols []string, expected string) {
 	s := &webtransport.Server{
-		ApplicationProtocols: serverProtocols,
 		H3: &http3.Server{
 			TLSConfig: webtransport.TLSConf,
 			QUICConfig: &quic.Config{
@@ -202,7 +196,7 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 	}
 	defer s.Close()
 	var serverProtocol string
-	addHandler(t, s, func(sess *webtransport.Session) {
+	addHandler(t, s, webtransport.Upgrader{ApplicationProtocols: serverProtocols}, func(sess *webtransport.Session) {
 		serverProtocol = sess.SessionState().ApplicationProtocol
 	})
 
@@ -373,7 +367,7 @@ func TestMultipleClients(t *testing.T) {
 		H3: &http3.Server{TLSConfig: webtransport.TLSConf},
 	}
 	defer s.Close()
-	addHandler(t, s, newEchoHandler(t))
+	addHandler(t, s, webtransport.Upgrader{}, newEchoHandler(t))
 
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
@@ -567,11 +561,10 @@ func TestCheckOrigin(t *testing.T) {
 	for _, tc := range tcs {
 		t.Run(tc.Name, func(t *testing.T) {
 			s := &webtransport.Server{
-				H3:          &http3.Server{TLSConfig: webtransport.TLSConf},
-				CheckOrigin: tc.CheckOrigin,
+					H3: &http3.Server{TLSConfig: webtransport.TLSConf},
 			}
 			defer s.Close()
-			addHandler(t, s, newEchoHandler(t))
+			addHandler(t, s, webtransport.Upgrader{CheckOrigin: tc.CheckOrigin}, newEchoHandler(t))
 
 			addr, closeServer := runServer(t, s)
 			defer closeServer()
@@ -748,11 +741,7 @@ func TestSessionContextValues(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-	upgrader := webtransport.Upgrader{
-		ApplicationProtocols: s.ApplicationProtocols,
-		ReorderingTimeout:    s.ReorderingTimeout,
-		CheckOrigin:          s.CheckOrigin,
-	}
+		upgrader := webtransport.Upgrader{}
 	serverSessChan := make(chan *webtransport.Session, 1)
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), contextKey, serverValue)

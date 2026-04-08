@@ -64,11 +64,6 @@ func (s *Server) configureHTTP3Server() {
 type Server struct {
 	H3 *http3.Server
 
-	// Deprecated: use Upgrader.ApplicationProtocols instead.
-	// ApplicationProtocols is a list of application protocols that can be negotiated,
-	// see section 3.3 of https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-14 for details.
-	ApplicationProtocols []string
-
 	// Deprecated: use Upgrader.ReorderingTimeout instead.
 	// ReorderingTimeout is the maximum time an incoming WebTransport stream that cannot be associated
 	// with a session is buffered. It is also the maximum time a WebTransport connection request is
@@ -77,13 +72,6 @@ type Server struct {
 	// after the first WebTransport stream(s) for that session.
 	// Defaults to 5 seconds.
 	ReorderingTimeout time.Duration
-
-	// Deprecated: use Upgrader.CheckOrigin instead.
-	// CheckOrigin is used to validate the request origin, thereby preventing cross-site request forgery.
-	// CheckOrigin returns true if the request Origin header is acceptable.
-	// If unset, a safe default is used: If the Origin header is set, it is checked that it
-	// matches the request's Host header.
-	CheckOrigin func(r *http.Request) bool
 
 	ctx       context.Context // is closed when Close is called
 	ctxCancel context.CancelFunc
@@ -120,9 +108,7 @@ func (s *Server) init() error {
 	s.configureHTTP3Server()
 
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
-	if s.CheckOrigin == nil {
-		s.CheckOrigin = checkSameOrigin
-	}
+
 	return nil
 }
 
@@ -333,21 +319,6 @@ func (s *Server) Close() error {
 	err := s.H3.Close()
 	s.refCount.Wait()
 	return err
-}
-
-// Upgrade upgrades an incoming HTTP request to a WebTransport session.
-//
-// Deprecated: use Upgrader.Upgrade instead.
-func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
-	if err := s.initialize(); err != nil {
-		return nil, err
-	}
-	u := &Upgrader{
-		ApplicationProtocols: s.ApplicationProtocols,
-		ReorderingTimeout:    s.ReorderingTimeout,
-		CheckOrigin:          s.CheckOrigin,
-	}
-	return u.Upgrade(w, r)
 }
 
 // copied from https://github.com/gorilla/websocket

@@ -68,7 +68,7 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	}
 	defer s.Close()
 	connChan := make(chan *webtransport.Session)
-	addHandler(t, &s, func(c *webtransport.Session) {
+	addHandler(t, &s, webtransport.Upgrader{}, func(c *webtransport.Session) {
 		connChan <- c
 	})
 
@@ -130,7 +130,7 @@ func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 	}
 	defer s.Close()
 	connChan := make(chan *webtransport.Session)
-	addHandler(t, &s, func(c *webtransport.Session) {
+	addHandler(t, &s, webtransport.Upgrader{}, func(c *webtransport.Session) {
 		connChan <- c
 	})
 
@@ -195,11 +195,7 @@ func TestServerSettingsCheck(t *testing.T) {
 		ReorderingTimeout: timeout,
 	}
 	errChan := make(chan error, 1)
-	upgrader := webtransport.Upgrader{
-		ApplicationProtocols: s.ApplicationProtocols,
-		ReorderingTimeout:    s.ReorderingTimeout,
-		CheckOrigin:          s.CheckOrigin,
-	}
+	upgrader := webtransport.Upgrader{ReorderingTimeout: timeout}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		_, err := upgrader.Upgrade(w, r)
