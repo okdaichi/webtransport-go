@@ -454,6 +454,11 @@ func (s *Session) SessionState() SessionState {
 	}
 }
 
+// ConnectionStats returns the statistics of the underlying QUIC connection.
+func (s *Session) ConnectionStats() quic.ConnectionStats {
+	return s.conn.ConnectionStats()
+}
+
 // truncateUTF8 cuts a string to max n bytes without breaking UTF-8 characters.
 func truncateUTF8(s string, n int) string {
 	if len(s) <= n {
