@@ -2,6 +2,7 @@ package webtransport
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -139,4 +140,55 @@ func TestUpgraderSelectProtocol(t *testing.T) {
 	require.Equal(t, "other", u.selectProtocol([]string{`"other"`}))
 	require.Empty(t, u.selectProtocol([]string{`"unknown"`}))
 	require.Empty(t, u.selectProtocol([]string{`malformed`}))
+}
+
+// TestUpgraderHandshakeErrorType guards the gorilla-style contract: client-caused
+// handshake failures are returned as HandshakeError (callers can errors.As them, e.g. to
+// map to a 4xx), while server-side misconfiguration is returned as a plain error.
+func TestUpgraderHandshakeErrorType(t *testing.T) {
+	var u Upgrader
+
+	isHandshake := func(t *testing.T, err error) {
+		t.Helper()
+		var he HandshakeError
+		require.ErrorAs(t, err, &he, "expected a HandshakeError")
+	}
+	isNotHandshake := func(t *testing.T, err error) {
+		t.Helper()
+		var he HandshakeError
+		require.False(t, errors.As(err, &he), "expected a plain (non-Handshake) error")
+	}
+
+	t.Run("wrong method is a handshake error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://localhost/webtransport", nil)
+		req.Proto = protocolHeader
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
+		isHandshake(t, err)
+	})
+
+	t.Run("wrong protocol is a handshake error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodConnect, "https://localhost/webtransport", nil)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
+		isHandshake(t, err)
+	})
+
+	t.Run("rejected origin is a handshake error", func(t *testing.T) {
+		req := newUpgradeRequestWithConnContext(true)
+		req.Header.Set("Origin", "https://evil.example")
+		req.Host = "localhost"
+		_, err := u.Upgrade(&settingserFlusherResponseWriter{}, req)
+		isHandshake(t, err)
+	})
+
+	t.Run("missing QUIC connection is NOT a handshake error", func(t *testing.T) {
+		req := newUpgradeRequestWithoutConnContext()
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
+		isNotHandshake(t, err)
+	})
+
+	t.Run("missing session manager is NOT a handshake error", func(t *testing.T) {
+		req := newUpgradeRequestWithConnContext(false)
+		_, err := u.Upgrade(&settingserFlusherResponseWriter{}, req)
+		isNotHandshake(t, err)
+	})
 }

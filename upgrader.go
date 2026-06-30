@@ -13,11 +13,33 @@ import (
 	"github.com/dunglas/httpsfv"
 )
 
+// HandshakeError describes an error with the WebTransport handshake from the peer.
+// Upgrade returns a HandshakeError for client-caused handshake failures — wrong request
+// method or :protocol, a rejected origin, the client's SETTINGS not arriving in time, or
+// missing datagram support. Server-side misconfiguration (the request was not routed
+// through a webtransport.Server, or the ResponseWriter lacks required http3 interfaces)
+// is returned as a plain error instead.
+//
+// Callers can distinguish the two with errors.As:
+//
+//	var he webtransport.HandshakeError
+//	if errors.As(err, &he) { /* client-side handshake failure */ }
+type HandshakeError struct {
+	message string
+}
+
+func (e HandshakeError) Error() string { return e.message }
+
+// handshakeError returns a HandshakeError carrying the formatted message.
+func handshakeError(format string, a ...any) error {
+	return HandshakeError{message: fmt.Sprintf(format, a...)}
+}
+
 // Upgrader upgrades a single HTTP/3 request to a WebTransport session.
 //
 // Configure an Upgrader with the application's origin policy, negotiable application
 // protocols, and SETTINGS wait, then call Upgrade from the http.Handler that the
-// Server's H3.Server dispatches to. Upgrader is safe for concurrent use.
+// Server's H3.Server dispatches to. It is safe to call an Upgrader's methods concurrently.
 //
 // Upgrade requires the request to have been routed through a webtransport.Server
 // (Serve / ListenAndServe / ServeQUICConn): the Server provisions the underlying QUIC
@@ -37,10 +59,13 @@ type Upgrader struct {
 	// connection-level concern handled by the Server and is not governed by this value.)
 	ReorderingTimeout time.Duration
 
-	// CheckOrigin is used to validate the request origin, thereby preventing cross-site request forgery.
-	// CheckOrigin returns true if the request Origin header is acceptable.
-	// If unset, a safe default is used: If the Origin header is set, it is checked that it
-	// matches the request's Host header.
+	// CheckOrigin returns true if the request Origin header is acceptable. If
+	// CheckOrigin is nil, then a safe default is used: return false if the Origin
+	// request header is present and the origin host is not equal to the request Host
+	// header.
+	//
+	// A CheckOrigin function should carefully validate the request origin to prevent
+	// cross-site request forgery.
 	CheckOrigin func(r *http.Request) bool
 }
 
@@ -78,12 +103,17 @@ func (u *Upgrader) selectProtocol(theirs []string) string {
 
 // Upgrade upgrades the incoming HTTP/3 request to a WebTransport session.
 // The request must have been routed through a webtransport.Server.
+//
+// A client-caused handshake failure is returned as a HandshakeError; other failures
+// (the request was not routed through a webtransport.Server, or the ResponseWriter is
+// missing required http3 interfaces) are returned as a plain error. Upgrade does not
+// write an HTTP error response on failure; the caller is responsible for replying.
 func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
 	if r.Method != http.MethodConnect {
-		return nil, fmt.Errorf("expected CONNECT request, got %s", r.Method)
+		return nil, handshakeError("expected CONNECT request, got %s", r.Method)
 	}
 	if !isWebTransportProtocol(r.Proto) {
-		return nil, fmt.Errorf("unexpected protocol: %s", r.Proto)
+		return nil, handshakeError("unexpected protocol: %s", r.Proto)
 	}
 
 	checkOrigin := u.CheckOrigin
@@ -91,7 +121,7 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 		checkOrigin = checkSameOrigin
 	}
 	if !checkOrigin(r) {
-		return nil, errors.New("webtransport: request origin not allowed")
+		return nil, handshakeError("webtransport: request origin not allowed")
 	}
 
 	connCtx := serverConnContextFromRequest(r)
@@ -114,10 +144,10 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 	select {
 	case <-settingser.ReceivedSettings():
 	case <-timer.C:
-		return nil, errors.New("webtransport: didn't receive the client's SETTINGS on time")
+		return nil, handshakeError("webtransport: didn't receive the client's SETTINGS on time")
 	}
 	if !settingser.Settings().EnableDatagrams {
-		return nil, errors.New("webtransport: missing datagram support")
+		return nil, handshakeError("webtransport: missing datagram support")
 	}
 
 	if selectedProtocol != "" {
