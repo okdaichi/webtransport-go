@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -124,19 +124,18 @@ func runServer(tlsConf *tls.Config, certHash, addr, browserAddr string, protocol
 			EnableStreamResetPartialDelivery: true,
 		},
 	}
-	webtransport.ConfigureHTTP3Server(h3Server)
 	mux := http.NewServeMux()
 	h3Server.Handler = mux
 
-	s := webtransport.Server{
+	s := webtransport.Server{H3: h3Server}
+	upgrader := webtransport.Upgrader{
 		ApplicationProtocols: protocols,
-		H3:                   h3Server,
 		CheckOrigin:          func(*http.Request) bool { return true },
 	}
 
 	// Create a new HTTP endpoint /webtransport.
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
-		sess, err := s.Upgrade(w, r)
+		sess, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			log.Printf("upgrading failed: %s", err)
 			w.WriteHeader(500)

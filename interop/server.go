@@ -18,7 +18,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/interop/utils"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 )
 
 type session struct {
@@ -100,10 +100,9 @@ func RunInteropServer() error {
 		},
 		QUICConfig: quicConf,
 	}
-	webtransport.ConfigureHTTP3Server(h3Server)
-	s := &webtransport.Server{
+	s := &webtransport.Server{H3: h3Server}
+	upgrader := &webtransport.Upgrader{
 		ApplicationProtocols: protocols,
-		H3:                   h3Server,
 		CheckOrigin:          func(*http.Request) bool { return true },
 	}
 	defer s.Close()
@@ -119,7 +118,7 @@ func RunInteropServer() error {
 	}
 	for _, ep := range endpoints {
 		handler := func(w http.ResponseWriter, r *http.Request) {
-			c, err := s.Upgrade(w, r)
+			c, err := upgrader.Upgrade(w, r)
 			if err != nil {
 				logger.Error("upgrading failed", "endpoint", ep, "err", err)
 				w.WriteHeader(500)

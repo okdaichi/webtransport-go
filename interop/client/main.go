@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/quic-go/webtransport-go/interop"
+	"github.com/okdaichi/webtransport-go/interop"
 )
 
 func main() {

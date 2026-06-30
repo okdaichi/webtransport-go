@@ -383,3 +383,8 @@ func (s *Session) SessionState() SessionState {
 		ApplicationProtocol: s.applicationProtocol,
 	}
 }
+
+// ConnectionStats returns the statistics of the underlying QUIC connection.
+func (s *Session) ConnectionStats() quic.ConnectionStats {
+	return s.conn.ConnectionStats()
+}

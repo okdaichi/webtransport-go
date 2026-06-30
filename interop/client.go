@@ -19,7 +19,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/interop/utils"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 )
 
 func parseClientRequests(s string) (map[string][]string, error) {
