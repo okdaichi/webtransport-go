@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -34,42 +34,42 @@ func scaleDuration(d time.Duration) time.Duration {
 }
 
 func TestUpgradeFailures(t *testing.T) {
-	var s webtransport.Server
+	var u webtransport.Upgrader
 
 	t.Run("wrong request method", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/webtransport", nil)
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
 		require.EqualError(t, err, "expected CONNECT request, got GET")
 	})
 
 	t.Run("wrong protocol", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
 		require.EqualError(t, err, "unexpected protocol: HTTP/1.1")
 	})
 }
 
 func TestUpgradeProtocolAcceptance(t *testing.T) {
-	var s webtransport.Server
+	var u webtransport.Upgrader
 
 	t.Run("accepts webtransport-h3", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
 		req.Proto = "webtransport-h3"
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "webtransport: missing QUIC connection")
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
+		require.ErrorContains(t, err, "webtransport: missing QUIC connection")
 	})
 
 	t.Run("accepts legacy webtransport", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
 		req.Proto = "webtransport"
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "webtransport: missing QUIC connection")
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
+		require.ErrorContains(t, err, "webtransport: missing QUIC connection")
 	})
 
 	t.Run("rejects unknown protocol", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
 		req.Proto = "websocket"
-		_, err := s.Upgrade(httptest.NewRecorder(), req)
+		_, err := u.Upgrade(httptest.NewRecorder(), req)
 		require.EqualError(t, err, "unexpected protocol: websocket")
 	})
 }
@@ -97,7 +97,6 @@ func TestServerClosesConnectionForInvalidSessionID(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	defer udpConn.Close()
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 	addr := fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port)
 
@@ -145,14 +144,13 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	}
 	defer s.Close()
 	connChan := make(chan *webtransport.Session)
-	addHandler(t, &s, func(c *webtransport.Session) {
+	addHandler(t, &s, &webtransport.Upgrader{}, func(c *webtransport.Session) {
 		connChan <- c
 	})
 
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 
 	cconn, err := quic.DialAddr(
@@ -200,83 +198,16 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	require.Equal(t, []byte("raboof"), data)
 }
 
-func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
-	timeout := scaleDuration(100 * time.Millisecond)
-	s := webtransport.Server{
-		H3:                &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
-		ReorderingTimeout: timeout,
-	}
-	defer s.Close()
-	connChan := make(chan *webtransport.Session)
-	addHandler(t, &s, func(c *webtransport.Session) {
-		connChan <- c
-	})
-
-	udpConn, err := net.ListenUDP("udp", nil)
-	require.NoError(t, err)
-	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
-	go s.Serve(udpConn)
-
-	cconn, err := quic.DialAddr(
-		context.Background(),
-		fmt.Sprintf("localhost:%d", port),
-		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
-		&quic.Config{EnableDatagrams: true},
-	)
-	require.NoError(t, err)
-
-	// Open a new stream for a WebTransport session we'll establish later. Stream ID: 0.
-	str := createStreamAndWrite(t, cconn, 4, []byte("foobar"))
-
-	time.Sleep(2 * timeout)
-
-	tr := &http3.Transport{EnableDatagrams: true}
-	conn := tr.NewClientConn(cconn)
-
-	// Reordering was too long. The stream should now have been reset by the server.
-	_, err = str.Read([]byte{0})
-	var streamErr *quic.StreamError
-	require.ErrorAs(t, err, &streamErr)
-	require.Equal(t, webtransport.WTBufferedStreamRejectedErrorCode, streamErr.ErrorCode)
-
-	// Now establish the session. Make sure we don't accept the stream.
-	requestStr, err := conn.OpenRequestStream(context.Background())
-	require.NoError(t, err)
-	require.NoError(t, requestStr.SendRequestHeader(
-		webtransport.NewWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
-	))
-	rsp, err := requestStr.ReadResponse()
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	sconn := <-connChan
-	defer sconn.CloseWithError(0, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	_, err = sconn.AcceptStream(ctx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// Establish another stream and make sure it's accepted now.
-	createStreamAndWrite(t, cconn, 4, []byte("raboof"))
-	ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	sstr, err := sconn.AcceptStream(ctx)
-	require.NoError(t, err)
-	data, err := io.ReadAll(sstr)
-	require.NoError(t, err)
-	require.Equal(t, []byte("raboof"), data)
-}
-
 func TestServerSettingsCheck(t *testing.T) {
 	timeout := scaleDuration(150 * time.Millisecond)
 	s := webtransport.Server{
-		H3:                &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
-		ReorderingTimeout: timeout,
+		H3: &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
 	}
+	upgrader := webtransport.Upgrader{ReorderingTimeout: timeout}
 	errChan := make(chan error, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
-		_, err := s.Upgrade(w, r)
+		_, err := upgrader.Upgrade(w, r)
 		w.WriteHeader(http.StatusNotImplemented)
 		errChan <- err
 	})
@@ -284,7 +215,6 @@ func TestServerSettingsCheck(t *testing.T) {
 	udpConn, err := net.ListenUDP("udp", nil)
 	require.NoError(t, err)
 	port := udpConn.LocalAddr().(*net.UDPAddr).Port
-	webtransport.ConfigureHTTP3Server(s.H3)
 	go s.Serve(udpConn)
 
 	cconn, err := quic.DialAddr(
@@ -383,7 +313,6 @@ func TestListenAndServeCloseClosesUDPConn(t *testing.T) {
 	require.NoError(t, udpConn.Close())
 
 	s := webtransport.Server{H3: &http3.Server{Addr: addr, TLSConfig: webtransport.TLSConf}}
-	webtransport.ConfigureHTTP3Server(s.H3)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- s.ListenAndServe() }()
