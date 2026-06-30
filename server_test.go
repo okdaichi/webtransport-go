@@ -74,7 +74,6 @@ func TestUpgradeProtocolAcceptance(t *testing.T) {
 	})
 }
 
-//nolint:unparam
 func createStreamAndWrite(t *testing.T, conn *quic.Conn, sessionID uint64, data []byte) *quic.Stream {
 	t.Helper()
 
