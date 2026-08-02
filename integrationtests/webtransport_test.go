@@ -1,4 +1,4 @@
-package webtransport_test
+package integrationtests
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/okdaichi/webtransport-go"
+	"github.com/okdaichi/webtransport-go/internal/testdata"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -25,6 +27,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func scaleDuration(d time.Duration) time.Duration {
+	if os.Getenv("CI") != "" {
+		return 5 * d
+	}
+	return d
+}
 
 func runServer(t *testing.T, s *webtransport.Server) (addr *net.UDPAddr, close func()) {
 	laddr, err := net.ResolveUDPAddr("udp", "localhost:0")
@@ -47,7 +56,7 @@ func runServer(t *testing.T, s *webtransport.Server) (addr *net.UDPAddr, close f
 func establishSession(t *testing.T, handler func(*webtransport.Session)) (sess *webtransport.Session, close func()) {
 	s := &webtransport.Server{
 		H3: &http3.Server{
-			TLSConfig: webtransport.TLSConf,
+			TLSConfig: testdata.TLSConf,
 			QUICConfig: &quic.Config{
 				EnableDatagrams:                  true,
 				EnableStreamResetPartialDelivery: true,
@@ -58,8 +67,8 @@ func establishSession(t *testing.T, handler func(*webtransport.Session)) (sess *
 	addHandler(t, s, &webtransport.Upgrader{}, handler)
 
 	addr, closeServer := runServer(t, s)
-	d := webtransport.Dialer{
-		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+	d := webtransport.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
 			EnableStreamResetPartialDelivery: true,
@@ -171,7 +180,7 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &webtransport.Server{
 				H3: &http3.Server{
-					TLSConfig: webtransport.TLSConf,
+					TLSConfig: testdata.TLSConf,
 					QUICConfig: &quic.Config{
 						EnableDatagrams:                  true,
 						EnableStreamResetPartialDelivery: true,
@@ -190,8 +199,8 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 			addr, closeServer := runServer(t, s)
 			defer closeServer()
 
-			d := webtransport.Dialer{
-				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+			d := webtransport.Transport{
+				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 				QUICConfig: &quic.Config{
 					EnableDatagrams:                  true,
 					EnableStreamResetPartialDelivery: true,
@@ -218,7 +227,7 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverProtocols []string, expected string) {
 	s := &webtransport.Server{
 		H3: &http3.Server{
-			TLSConfig: webtransport.TLSConf,
+			TLSConfig: testdata.TLSConf,
 			QUICConfig: &quic.Config{
 				EnableDatagrams:                  true,
 				EnableStreamResetPartialDelivery: true,
@@ -227,18 +236,15 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 		},
 	}
 	defer s.Close()
-	var mu sync.Mutex
-	var serverProtocol string
+	serverProtocol := make(chan string, 1)
 	addHandler(t, s, &webtransport.Upgrader{ApplicationProtocols: serverProtocols}, func(sess *webtransport.Session) {
-		mu.Lock()
-		serverProtocol = sess.SessionState().ApplicationProtocol
-		mu.Unlock()
+		serverProtocol <- sess.SessionState().ApplicationProtocol
 	})
 
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
-	d := webtransport.Dialer{
-		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+	d := webtransport.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
 			EnableStreamResetPartialDelivery: true,
@@ -253,9 +259,7 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 	defer sess.CloseWithError(0, "")
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
-	mu.Lock()
-	assert.Equal(t, expected, serverProtocol)
-	mu.Unlock()
+	assert.Equal(t, expected, <-serverProtocol)
 	assert.Equal(t, expected, sess.SessionState().ApplicationProtocol)
 }
 
@@ -401,7 +405,7 @@ func TestUnidirectionalStreams(t *testing.T) {
 func TestMultipleClients(t *testing.T) {
 	const numClients = 5
 	s := &webtransport.Server{
-		H3: &http3.Server{TLSConfig: webtransport.TLSConf},
+		H3: &http3.Server{TLSConfig: testdata.TLSConf},
 	}
 	defer s.Close()
 	addHandler(t, s, &webtransport.Upgrader{}, newEchoHandler(t))
@@ -414,8 +418,8 @@ func TestMultipleClients(t *testing.T) {
 	for range numClients {
 		go func() {
 			defer wg.Done()
-			d := webtransport.Dialer{
-				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+			d := webtransport.Transport{
+				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 				QUICConfig: &quic.Config{
 					EnableDatagrams:                  true,
 					EnableStreamResetPartialDelivery: true,
@@ -598,7 +602,7 @@ func TestCheckOrigin(t *testing.T) {
 	for _, tc := range tcs {
 		t.Run(tc.Name, func(t *testing.T) {
 			s := &webtransport.Server{
-				H3: &http3.Server{TLSConfig: webtransport.TLSConf},
+				H3: &http3.Server{TLSConfig: testdata.TLSConf},
 			}
 			defer s.Close()
 			addHandler(t, s, &webtransport.Upgrader{CheckOrigin: tc.CheckOrigin}, newEchoHandler(t))
@@ -606,8 +610,8 @@ func TestCheckOrigin(t *testing.T) {
 			addr, closeServer := runServer(t, s)
 			defer closeServer()
 
-			d := webtransport.Dialer{
-				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+			d := webtransport.Transport{
+				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 				QUICConfig:      &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 			}
 			defer d.Close()
@@ -802,7 +806,7 @@ func TestSessionContextValues(t *testing.T) {
 
 	s := &webtransport.Server{
 		H3: &http3.Server{
-			TLSConfig:  webtransport.TLSConf,
+			TLSConfig:  testdata.TLSConf,
 			QUICConfig: &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 		},
 	}
@@ -826,8 +830,8 @@ func TestSessionContextValues(t *testing.T) {
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
 
-	d := webtransport.Dialer{
-		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
+	d := webtransport.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
 		QUICConfig:      &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
 	defer d.Close()

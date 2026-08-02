@@ -33,6 +33,23 @@ func scaleDuration(d time.Duration) time.Duration {
 	return d
 }
 
+func addHandler(t *testing.T, s *webtransport.Server, connHandler func(*webtransport.Session)) {
+	t.Helper()
+	upgrader := &webtransport.Upgrader{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r)
+		if err != nil {
+			t.Logf("upgrading failed: %s", err)
+			w.WriteHeader(404)
+			return
+		}
+		connHandler(conn)
+	})
+	s.H3.Handler = mux
+}
+
 func TestUpgradeFailures(t *testing.T) {
 	var u webtransport.Upgrader
 
@@ -74,6 +91,7 @@ func TestUpgradeProtocolAcceptance(t *testing.T) {
 	})
 }
 
+//nolint:unparam
 func createStreamAndWrite(t *testing.T, conn *quic.Conn, sessionID uint64, data []byte) *quic.Stream {
 	t.Helper()
 
@@ -143,7 +161,7 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	}
 	defer s.Close()
 	connChan := make(chan *webtransport.Session)
-	addHandler(t, &s, &webtransport.Upgrader{}, func(c *webtransport.Session) {
+	addHandler(t, &s, func(c *webtransport.Session) {
 		connChan <- c
 	})
 
@@ -202,7 +220,7 @@ func TestServerSettingsCheck(t *testing.T) {
 	s := webtransport.Server{
 		H3: &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
 	}
-	upgrader := webtransport.Upgrader{ReorderingTimeout: timeout}
+	upgrader := &webtransport.Upgrader{ReorderingTimeout: timeout}
 	errChan := make(chan error, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
@@ -235,6 +253,52 @@ func TestServerSettingsCheck(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rsp.StatusCode)
 
 	require.ErrorContains(t, <-errChan, "webtransport: missing datagram support")
+}
+
+func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
+	s := webtransport.Server{H3: &http3.Server{TLSConfig: webtransport.TLSConf}}
+	defer s.Close()
+
+	upgrader := &webtransport.Upgrader{}
+	s.H3.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = upgrader.Upgrade(w, r)
+	})
+
+	udpConn, err := net.ListenUDP("udp", nil)
+	require.NoError(t, err)
+	defer udpConn.Close()
+	go s.Serve(udpConn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+	defer cancel()
+	cconn, err := quic.DialAddr(
+		ctx,
+		fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port),
+		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
+	)
+	require.NoError(t, err)
+	defer cconn.CloseWithError(0, "")
+
+	tr := &http3.Transport{EnableDatagrams: true}
+	conn := tr.NewClientConn(cconn)
+	url := fmt.Sprintf("https://localhost:%d/webtransport", udpConn.LocalAddr().(*net.UDPAddr).Port)
+
+	first, err := conn.OpenRequestStream(ctx)
+	require.NoError(t, err)
+	require.NoError(t, first.SendRequestHeader(webtransport.NewWebTransportRequest(t, url)))
+	rsp, err := first.ReadResponse()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+
+	second, err := conn.OpenRequestStream(ctx)
+	require.NoError(t, err)
+	require.NoError(t, second.SendRequestHeader(webtransport.NewWebTransportRequest(t, url)))
+	_, err = second.ReadResponse()
+	var streamErr *quic.StreamError
+	require.ErrorAs(t, err, &streamErr)
+	require.True(t, streamErr.Remote)
+	require.Equal(t, quic.StreamErrorCode(http3.ErrCodeRequestRejected), streamErr.ErrorCode)
 }
 
 func TestImmediateClose(t *testing.T) {
