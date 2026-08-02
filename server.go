@@ -4,12 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -17,8 +15,6 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
-
-	"github.com/dunglas/httpsfv"
 )
 
 const (
@@ -31,31 +27,11 @@ const (
 	webTransportUniStreamType = 0x54
 )
 
-type quicConnKeyType struct{}
-
-var quicConnKey = quicConnKeyType{}
-
-func ConfigureHTTP3Server(s *http3.Server) {
-	if s.AdditionalSettings == nil {
-		s.AdditionalSettings = make(map[uint64]uint64, 3)
-	}
-	// send the old setting for backwards compatibility with older clients
-	s.AdditionalSettings[settingsEnableWebtransportDraft06] = 1
-	s.AdditionalSettings[settingsWebTransportEnabled] = 1
-
-	// Safari requires SETTINGS_WT_MAX_SESSIONS >= 1 (draft-ietf-webtrans-http3-14)
-	s.AdditionalSettings[settingsWebTransportMaxSessions] = 1<<62 - 1
-
-	s.EnableDatagrams = true
-	origConnContext := s.ConnContext
-	s.ConnContext = func(ctx context.Context, conn *quic.Conn) context.Context {
-		if origConnContext != nil {
-			ctx = origConnContext(ctx, conn)
-		}
-		ctx = context.WithValue(ctx, quicConnKey, conn)
-		return ctx
-	}
-}
+// defaultReorderingTimeout governs the connection-level buffering of incoming
+// WebTransport streams that arrive before their session's CONNECT request. It is
+// intentionally a package var (so tests can shorten it) and distinct from
+// Upgrader.ReorderingTimeout, which governs only the SETTINGS wait during Upgrade.
+var defaultReorderingTimeout = 5 * time.Second
 
 type Server struct {
 	H3 *http3.Server
@@ -63,24 +39,6 @@ type Server struct {
 	// Config is the WebTransport configuration used for new sessions.
 	// If nil, the zero value is used.
 	Config *Config
-
-	// ApplicationProtocols is a list of application protocols that can be negotiated,
-	// see section 3.3 of https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-15 for details.
-	ApplicationProtocols []string
-
-	// ReorderingTimeout is the maximum time an incoming WebTransport stream that cannot be associated
-	// with a session is buffered. It is also the maximum time a WebTransport connection request is
-	// blocked waiting for the client's SETTINGS are received.
-	// This can happen if the CONNECT request (that creates a new session) is reordered, and arrives
-	// after the first WebTransport stream(s) for that session.
-	// Defaults to 5 seconds.
-	ReorderingTimeout time.Duration
-
-	// CheckOrigin is used to validate the request origin, thereby preventing cross-site request forgery.
-	// CheckOrigin returns true if the request Origin header is acceptable.
-	// If unset, a safe default is used: If the Origin header is set, it is checked that it
-	// matches the request's Host header.
-	CheckOrigin func(r *http.Request) bool
 
 	ctx       context.Context // is closed when Close is called
 	ctxCancel context.CancelFunc
@@ -102,30 +60,52 @@ func (s *Server) initialize() error {
 	return s.initErr
 }
 
-func (s *Server) timeout() time.Duration {
-	timeout := s.ReorderingTimeout
-	if timeout == 0 {
-		return 5 * time.Second
-	}
-	return timeout
-}
-
 func (s *Server) init() error {
 	if s.Config != nil {
 		s.config = *s.Config
 	}
 	if s.H3 != nil {
-		ConfigureHTTP3Server(s.H3)
+		s.configureHTTP3Server(s.H3)
 		s.config.addSettings(s.H3.AdditionalSettings)
 	}
 
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 
 	s.conns = make(map[*quic.Conn]*sessionManager)
-	if s.CheckOrigin == nil {
-		s.CheckOrigin = checkSameOrigin
-	}
 	return nil
+}
+
+// configureHTTP3Server configures the HTTP/3 server for WebTransport: it enables
+// datagrams, advertises the WebTransport SETTINGS, and wraps ConnContext so each
+// request context carries a serverConnContext (QUIC conn + session manager + Config)
+// for Upgrader.Upgrade. It composes with any ConnContext the caller already set.
+func (s *Server) configureHTTP3Server(h3 *http3.Server) {
+	if h3.AdditionalSettings == nil {
+		h3.AdditionalSettings = make(map[uint64]uint64, 3)
+	}
+	// send the old setting for backwards compatibility with older clients
+	h3.AdditionalSettings[settingsEnableWebtransportDraft06] = 1
+	h3.AdditionalSettings[settingsWebTransportEnabled] = 1
+
+	// Safari requires SETTINGS_WT_MAX_SESSIONS >= 1 (draft-ietf-webtrans-http3-14)
+	h3.AdditionalSettings[settingsWebTransportMaxSessions] = 1<<62 - 1
+
+	h3.EnableDatagrams = true
+	origConnContext := h3.ConnContext
+	h3.ConnContext = func(ctx context.Context, conn *quic.Conn) context.Context {
+		if origConnContext != nil {
+			ctx = origConnContext(ctx, conn)
+		}
+		s.connsMx.Lock()
+		sessMgr := s.conns[conn]
+		s.connsMx.Unlock()
+		ctx = context.WithValue(ctx, serverConnContextKey, &serverConnContext{
+			conn:           conn,
+			sessionManager: sessMgr,
+			config:         s.config,
+		})
+		return ctx
+	}
 }
 
 func (s *Server) Serve(conn net.PacketConn) error {
@@ -201,7 +181,7 @@ func (s *Server) ServeQUICConn(conn *quic.Conn) error {
 
 	sessMgr, ok := s.conns[conn]
 	if !ok {
-		sessMgr = newSessionManager(s.timeout())
+		sessMgr = newSessionManager(defaultReorderingTimeout)
 		s.conns[conn] = sessMgr
 	}
 	s.connsMx.Unlock()
@@ -378,122 +358,6 @@ func (s *Server) Close() error {
 	err := s.H3.Close()
 	s.refCount.Wait()
 	return err
-}
-
-func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
-	if err := s.initialize(); err != nil {
-		return nil, err
-	}
-	if r.Method != http.MethodConnect {
-		return nil, fmt.Errorf("expected CONNECT request, got %s", r.Method)
-	}
-	if !isWebTransportProtocol(r.Proto) {
-		return nil, fmt.Errorf("unexpected protocol: %s", r.Proto)
-	}
-	if !s.CheckOrigin(r) {
-		return nil, errors.New("webtransport: request origin not allowed")
-	}
-
-	id := r.Context().Value(quicConnKey)
-	if id == nil {
-		return nil, errors.New("webtransport: missing QUIC connection")
-	}
-	conn := id.(*quic.Conn)
-
-	selectedProtocol := s.selectProtocol(r.Header[http.CanonicalHeaderKey(wtAvailableProtocolsHeader)])
-
-	// Wait for SETTINGS
-	settingser := w.(http3.Settingser)
-	timer := time.NewTimer(s.timeout())
-	defer timer.Stop()
-	select {
-	case <-settingser.ReceivedSettings():
-	case <-conn.Context().Done():
-		return nil, context.Cause(conn.Context())
-	case <-timer.C:
-		return nil, errors.New("webtransport: didn't receive the client's SETTINGS on time")
-	}
-	settings := settingser.Settings()
-	if !settings.EnableDatagrams {
-		return nil, errors.New("webtransport: missing datagram support")
-	}
-
-	if selectedProtocol != "" {
-		v, err := httpsfv.Marshal(httpsfv.NewItem(selectedProtocol))
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal selected protocol: %w", err)
-		}
-		w.Header().Add(wtProtocolHeader, v)
-	}
-
-	str := w.(http3.HTTPStreamer).HTTPStream()
-	sessID := sessionID(str.StreamID())
-	fc := s.config.sessionFlowControl(settings)
-
-	// The session manager should already exist because ServeQUICConn creates it
-	// before any HTTP requests can be processed on this connection.
-	s.connsMx.Lock()
-	sessMgr, ok := s.conns[conn]
-	if !ok {
-		s.connsMx.Unlock()
-		return nil, errors.New("webtransport: connection session manager not found")
-	}
-	// Multiple sessions on one HTTP/3 connection require WebTransport flow control.
-	if !fc.Enabled {
-		sessMgr.mx.Lock()
-		for _, entry := range sessMgr.sessions {
-			if entry.Session != nil {
-				sessMgr.mx.Unlock()
-				s.connsMx.Unlock()
-				str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				return nil, errors.New("webtransport: multiple sessions require flow control")
-			}
-		}
-		sessMgr.mx.Unlock()
-	}
-
-	sess := newSession(
-		context.WithoutCancel(r.Context()),
-		sessID,
-		conn,
-		str,
-		selectedProtocol,
-		fc,
-	)
-	sessMgr.AddSession(sessID, sess)
-	s.connsMx.Unlock()
-
-	w.WriteHeader(http.StatusOK)
-	w.(http.Flusher).Flush()
-	return sess, nil
-}
-
-func (s *Server) selectProtocol(theirs []string) string {
-	list, err := httpsfv.UnmarshalList(theirs)
-	if err != nil {
-		return ""
-	}
-	offered := make([]string, 0, len(list))
-	for _, item := range list {
-		i, ok := item.(httpsfv.Item)
-		if !ok {
-			return ""
-		}
-		protocol, ok := i.Value.(string)
-		if !ok {
-			return ""
-		}
-		offered = append(offered, protocol)
-	}
-	var selectedProtocol string
-	for _, p := range offered {
-		if slices.Contains(s.ApplicationProtocols, p) {
-			selectedProtocol = p
-			break
-		}
-	}
-	return selectedProtocol
 }
 
 // copied from https://github.com/gorilla/websocket

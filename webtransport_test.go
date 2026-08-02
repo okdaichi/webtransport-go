@@ -1,4 +1,4 @@
-package integrationtests
+package webtransport_test
 
 import (
 	"context"
@@ -10,15 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
-	"github.com/quic-go/webtransport-go/internal/testdata"
+	"github.com/okdaichi/webtransport-go"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -28,20 +26,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func scaleDuration(d time.Duration) time.Duration {
-	if os.Getenv("CI") != "" {
-		return 5 * d
-	}
-	return d
-}
-
 func runServer(t *testing.T, s *webtransport.Server) (addr *net.UDPAddr, close func()) {
 	laddr, err := net.ResolveUDPAddr("udp", "localhost:0")
 	require.NoError(t, err)
 	udpConn, err := net.ListenUDP("udp", laddr)
 	require.NoError(t, err)
 
-	webtransport.ConfigureHTTP3Server(s.H3)
 	servErr := make(chan error, 1)
 	go func() {
 		servErr <- s.Serve(udpConn)
@@ -57,7 +47,7 @@ func runServer(t *testing.T, s *webtransport.Server) (addr *net.UDPAddr, close f
 func establishSession(t *testing.T, handler func(*webtransport.Session)) (sess *webtransport.Session, close func()) {
 	s := &webtransport.Server{
 		H3: &http3.Server{
-			TLSConfig: testdata.TLSConf,
+			TLSConfig: webtransport.TLSConf,
 			QUICConfig: &quic.Config{
 				EnableDatagrams:                  true,
 				EnableStreamResetPartialDelivery: true,
@@ -65,11 +55,11 @@ func establishSession(t *testing.T, handler func(*webtransport.Session)) (sess *
 			},
 		},
 	}
-	addHandler(t, s, handler)
+	addHandler(t, s, &webtransport.Upgrader{}, handler)
 
 	addr, closeServer := runServer(t, s)
-	d := webtransport.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+	d := webtransport.Dialer{
+		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
 			EnableStreamResetPartialDelivery: true,
@@ -105,11 +95,14 @@ func sendDataAndCheckEcho(t *testing.T, sess *webtransport.Session) {
 	require.Equal(t, data, reply)
 }
 
-func addHandler(t *testing.T, s *webtransport.Server, connHandler func(*webtransport.Session)) {
+func addHandler(t *testing.T, s *webtransport.Server, upgrader *webtransport.Upgrader, connHandler func(*webtransport.Session)) {
 	t.Helper()
+	if upgrader == nil {
+		upgrader = &webtransport.Upgrader{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := s.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			t.Logf("upgrading failed: %s", err)
 			w.WriteHeader(404) // TODO: better error code
@@ -178,7 +171,7 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &webtransport.Server{
 				H3: &http3.Server{
-					TLSConfig: testdata.TLSConf,
+					TLSConfig: webtransport.TLSConf,
 					QUICConfig: &quic.Config{
 						EnableDatagrams:                  true,
 						EnableStreamResetPartialDelivery: true,
@@ -197,8 +190,8 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 			addr, closeServer := runServer(t, s)
 			defer closeServer()
 
-			d := webtransport.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+			d := webtransport.Dialer{
+				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 				QUICConfig: &quic.Config{
 					EnableDatagrams:                  true,
 					EnableStreamResetPartialDelivery: true,
@@ -224,9 +217,8 @@ func TestApplicationProtocolNegotiationErrors(t *testing.T) {
 
 func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverProtocols []string, expected string) {
 	s := &webtransport.Server{
-		ApplicationProtocols: serverProtocols,
 		H3: &http3.Server{
-			TLSConfig: testdata.TLSConf,
+			TLSConfig: webtransport.TLSConf,
 			QUICConfig: &quic.Config{
 				EnableDatagrams:                  true,
 				EnableStreamResetPartialDelivery: true,
@@ -235,15 +227,15 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 		},
 	}
 	defer s.Close()
-	serverProtocol := make(chan string, 1)
-	addHandler(t, s, func(sess *webtransport.Session) {
-		serverProtocol <- sess.SessionState().ApplicationProtocol
+	var serverProtocol string
+	addHandler(t, s, &webtransport.Upgrader{ApplicationProtocols: serverProtocols}, func(sess *webtransport.Session) {
+		serverProtocol = sess.SessionState().ApplicationProtocol
 	})
 
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
-	d := webtransport.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+	d := webtransport.Dialer{
+		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
 			EnableStreamResetPartialDelivery: true,
@@ -258,7 +250,7 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 	defer sess.CloseWithError(0, "")
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
-	assert.Equal(t, expected, <-serverProtocol)
+	assert.Equal(t, expected, serverProtocol)
 	assert.Equal(t, expected, sess.SessionState().ApplicationProtocol)
 }
 
@@ -404,10 +396,10 @@ func TestUnidirectionalStreams(t *testing.T) {
 func TestMultipleClients(t *testing.T) {
 	const numClients = 5
 	s := &webtransport.Server{
-		H3: &http3.Server{TLSConfig: testdata.TLSConf},
+		H3: &http3.Server{TLSConfig: webtransport.TLSConf},
 	}
 	defer s.Close()
-	addHandler(t, s, newEchoHandler(t))
+	addHandler(t, s, &webtransport.Upgrader{}, newEchoHandler(t))
 
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
@@ -417,8 +409,8 @@ func TestMultipleClients(t *testing.T) {
 	for range numClients {
 		go func() {
 			defer wg.Done()
-			d := webtransport.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+			d := webtransport.Dialer{
+				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 				QUICConfig: &quic.Config{
 					EnableDatagrams:                  true,
 					EnableStreamResetPartialDelivery: true,
@@ -601,17 +593,16 @@ func TestCheckOrigin(t *testing.T) {
 	for _, tc := range tcs {
 		t.Run(tc.Name, func(t *testing.T) {
 			s := &webtransport.Server{
-				H3:          &http3.Server{TLSConfig: testdata.TLSConf},
-				CheckOrigin: tc.CheckOrigin,
+				H3: &http3.Server{TLSConfig: webtransport.TLSConf},
 			}
 			defer s.Close()
-			addHandler(t, s, newEchoHandler(t))
+			addHandler(t, s, &webtransport.Upgrader{CheckOrigin: tc.CheckOrigin}, newEchoHandler(t))
 
 			addr, closeServer := runServer(t, s)
 			defer closeServer()
 
-			d := webtransport.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+			d := webtransport.Dialer{
+				TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 				QUICConfig:      &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 			}
 			defer d.Close()
@@ -806,16 +797,17 @@ func TestSessionContextValues(t *testing.T) {
 
 	s := &webtransport.Server{
 		H3: &http3.Server{
-			TLSConfig:  testdata.TLSConf,
+			TLSConfig:  webtransport.TLSConf,
 			QUICConfig: &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 		},
 	}
 	mux := http.NewServeMux()
 	serverSessChan := make(chan *webtransport.Session, 1)
+	upgrader := &webtransport.Upgrader{}
 	mux.HandleFunc("/webtransport", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), contextKey, serverValue)
 		r = r.WithContext(ctx)
-		conn, err := s.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
 		if err != nil {
 			t.Logf("upgrading failed: %s", err)
 			w.WriteHeader(404)
@@ -829,8 +821,8 @@ func TestSessionContextValues(t *testing.T) {
 	addr, closeServer := runServer(t, s)
 	defer closeServer()
 
-	d := webtransport.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: testdata.CertPool},
+	d := webtransport.Dialer{
+		TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool},
 		QUICConfig:      &quic.Config{Tracer: qlog.DefaultConnectionTracer, EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	}
 	defer d.Close()

@@ -378,6 +378,11 @@ func (s *Session) RemoteAddr() net.Addr {
 	return s.conn.RemoteAddr()
 }
 
+// ConnectionStats returns the statistics of the underlying QUIC connection.
+func (s *Session) ConnectionStats() quic.ConnectionStats {
+	return s.conn.ConnectionStats()
+}
+
 func (s *Session) CloseWithError(code SessionErrorCode, msg string) error {
 	closeCapsule := closeSessionCapsule{ErrorCode: code, Message: msg}
 	if first := s.closeWithError(&SessionError{ErrorCode: code, Message: msg}, &closeCapsule); first {

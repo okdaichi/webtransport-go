@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/okdaichi/webtransport-go"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3/qlog"
@@ -52,7 +52,7 @@ func runClient() error {
 		}
 	}
 
-	cl := &webtransport.Transport{
+	cl := &webtransport.Dialer{
 		ApplicationProtocols: protocols,
 		TLSClientConfig:      tlsConf,
 		QUICConfig: &quic.Config{
