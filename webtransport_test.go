@@ -227,9 +227,12 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 		},
 	}
 	defer s.Close()
+	var mu sync.Mutex
 	var serverProtocol string
 	addHandler(t, s, &webtransport.Upgrader{ApplicationProtocols: serverProtocols}, func(sess *webtransport.Session) {
+		mu.Lock()
 		serverProtocol = sess.SessionState().ApplicationProtocol
+		mu.Unlock()
 	})
 
 	addr, closeServer := runServer(t, s)
@@ -250,7 +253,9 @@ func testApplicationProtocolNegotiation(t *testing.T, clientProtocols, serverPro
 	defer sess.CloseWithError(0, "")
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
+	mu.Lock()
 	assert.Equal(t, expected, serverProtocol)
+	mu.Unlock()
 	assert.Equal(t, expected, sess.SessionState().ApplicationProtocol)
 }
 
