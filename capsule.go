@@ -30,9 +30,9 @@ type capsule interface {
 
 // parseNextCapsule parses Capsules sent on the request stream.
 // It returns the next known Capsule, skipping unknown Capsules.
-func parseNextCapsule(r io.Reader) (capsule, error) {
+func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 	for {
-		typ, capsuleReader, err := http3.ParseCapsule(quicvarint.NewReader(r))
+		typ, capsuleReader, err := parser.Next()
 		if err != nil {
 			return nil, err
 		}
