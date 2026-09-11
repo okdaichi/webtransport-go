@@ -106,6 +106,12 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 	return s.sendStr.SetWriteDeadline(t)
 }
 
+// SetPriority sets the scheduling priority for data sent on the stream.
+// See [SendStream.SetPriority] for more details.
+func (s *Stream) SetPriority(urgency int8, incremental bool) {
+	s.sendStr.SetPriority(urgency, incremental)
+}
+
 // SetReadDeadline sets the deadline for future Read calls.
 // See [ReceiveStream.SetReadDeadline] for more details.
 func (s *Stream) SetReadDeadline(t time.Time) error {

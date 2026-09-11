@@ -19,6 +19,7 @@ type quicSendStream interface {
 	Context() context.Context
 	SetWriteDeadline(time.Time) error
 	SetReliableBoundary()
+	SetPriority(urgency int8, incremental bool)
 }
 
 var (
@@ -319,4 +320,11 @@ func (s *SendStream) SetWriteDeadline(t time.Time) error {
 	s.deadlineMu.Unlock()
 
 	return maybeConvertStreamError(s.str.SetWriteDeadline(t))
+}
+
+// SetPriority sets the scheduling priority for data sent on the stream.
+// See [quic.SendStream.SetPriority] for the urgency/incremental semantics
+// defined by RFC 9218.
+func (s *SendStream) SetPriority(urgency int8, incremental bool) {
+	s.str.SetPriority(urgency, incremental)
 }

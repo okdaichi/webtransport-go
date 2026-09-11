@@ -248,6 +248,7 @@ func (*blockingHeaderStream) CancelWrite(quic.StreamErrorCode) {}
 func (*blockingHeaderStream) Context() context.Context         { return context.Background() }
 func (*blockingHeaderStream) SetWriteDeadline(time.Time) error { return nil }
 func (*blockingHeaderStream) SetReliableBoundary()             {}
+func (*blockingHeaderStream) SetPriority(int8, bool)           {}
 func (s *blockingHeaderStream) WriteWithLimit(b []byte, limit func(int) int) (int, error) {
 	return s.Write(b)
 }
