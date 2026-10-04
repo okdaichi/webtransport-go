@@ -630,6 +630,41 @@ func TestCheckOrigin(t *testing.T) {
 	}
 }
 
+// The session's context ends with the close error as its cause, on the side
+// that closed (Remote false) and on the peer (Remote true), carrying the code
+// and message.
+func TestSessionContextCauseIsCloseError(t *testing.T) {
+	serverCause := make(chan error, 1)
+	sess, closeServer := establishSession(t, func(sess *webtransport.Session) {
+		sess.CloseWithError(1337, "foobar")
+		// CloseWithError returns once the context has ended.
+		serverCause <- context.Cause(sess.Context())
+	})
+	defer closeServer()
+
+	select {
+	case <-sess.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the session context to end")
+	}
+
+	var sessErr *webtransport.SessionError
+	require.True(t, errors.As(context.Cause(sess.Context()), &sessErr), "client cause: %v", context.Cause(sess.Context()))
+	require.True(t, sessErr.Remote)
+	require.Equal(t, webtransport.SessionErrorCode(1337), sessErr.ErrorCode)
+	require.Equal(t, "foobar", sessErr.Message)
+
+	select {
+	case err := <-serverCause:
+		require.True(t, errors.As(err, &sessErr), "server cause: %v", err)
+		require.False(t, sessErr.Remote)
+		require.Equal(t, webtransport.SessionErrorCode(1337), sessErr.ErrorCode)
+		require.Equal(t, "foobar", sessErr.Message)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the server's cause")
+	}
+}
+
 func TestCloseStreamsOnSessionClose(t *testing.T) {
 	const errorCode = 42
 

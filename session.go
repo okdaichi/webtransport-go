@@ -78,7 +78,7 @@ func newSession(
 	applicationProtocol string,
 	fc sessionFlowControl,
 ) *Session {
-	ctx, ctxCancel := context.WithCancel(ctx)
+	ctx, ctxCancel := context.WithCancelCause(ctx)
 	c := &Session{
 		sessionID:           sessionID,
 		conn:                conn,
@@ -122,12 +122,22 @@ func newSession(
 		c.queueCapsule,
 	)
 
+	// The context ends with the error the session was closed with, so that
+	// context.Cause reports the peer's or the local close code and message.
+	// closeWithError records it before the CONNECT stream ends these
+	// goroutines. A session that ends without one keeps context.Canceled.
+	cancel := func() {
+		c.closeMx.Lock()
+		closeErr := c.closeErr
+		c.closeMx.Unlock()
+		ctxCancel(closeErr)
+	}
 	go func() {
-		defer ctxCancel()
+		defer cancel()
 		c.readFromConnectStream()
 	}()
 	go func() {
-		defer ctxCancel()
+		defer cancel()
 		c.writeToConnectStream()
 	}()
 	return c
@@ -297,7 +307,11 @@ func (s *Session) addIncomingUniStream(qstr *quic.ReceiveStream, streamHeaderLen
 	}
 }
 
-// Context returns a context that is closed when the session is closed.
+// Context returns a context that is closed when the session is closed. Its
+// cause (context.Cause) is the error the session was closed with: a
+// *SessionError carrying the code and message from CloseWithError, or from the
+// peer's WT_CLOSE_SESSION capsule. It is context.Canceled for a session that
+// ended without one.
 func (s *Session) Context() context.Context {
 	return s.ctx
 }
