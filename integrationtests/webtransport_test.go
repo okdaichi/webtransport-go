@@ -665,6 +665,34 @@ func TestSessionContextCauseIsCloseError(t *testing.T) {
 	}
 }
 
+// A client that closes its dialed session gets its close code to the server,
+// although Dial then closes the QUIC connection: the capsule must arrive
+// before the CONNECTION_CLOSE. Repeated, since a premature close lost the code
+// only some of the time.
+func TestClientCloseCodeReachesServer(t *testing.T) {
+	for i := range 20 {
+		serverCause := make(chan error, 1)
+		sess, closeServer := establishSession(t, func(sess *webtransport.Session) {
+			<-sess.Context().Done()
+			serverCause <- context.Cause(sess.Context())
+		})
+
+		require.NoError(t, sess.CloseWithError(1337, "foobar"))
+
+		select {
+		case err := <-serverCause:
+			var sessErr *webtransport.SessionError
+			require.True(t, errors.As(err, &sessErr), "run %d: server cause: %v", i, err)
+			require.True(t, sessErr.Remote)
+			require.Equal(t, webtransport.SessionErrorCode(1337), sessErr.ErrorCode)
+			require.Equal(t, "foobar", sessErr.Message)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("run %d: timeout waiting for the server's cause", i)
+		}
+		closeServer()
+	}
+}
+
 func TestCloseStreamsOnSessionClose(t *testing.T) {
 	const errorCode = 42
 

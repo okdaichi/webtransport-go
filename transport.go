@@ -112,9 +112,35 @@ func (d *Transport) Dial(ctx context.Context, urlStr string, reqHdr http.Header)
 		return rsp, nil, err
 	}
 	context.AfterFunc(sess.Context(), func() {
+		// The session's WT_CLOSE_SESSION capsule and FIN may still be in
+		// flight. QUIC doesn't deliver stream data sent before a
+		// CONNECTION_CLOSE, so closing at once would make the peer see a
+		// connection error in place of the session's close code. Wait a few
+		// round trips for them to arrive, unless the peer closes first.
+		t := time.NewTimer(closeConnGrace(qconn.ConnectionStats().SmoothedRTT))
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-qconn.Context().Done():
+		}
 		qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 	})
 	return rsp, sess, nil
+}
+
+// Bounds of the wait between a dialed session ending and its QUIC connection
+// closing (see closeConnGrace).
+const (
+	minCloseConnGrace = 50 * time.Millisecond
+	maxCloseConnGrace = time.Second
+)
+
+// closeConnGrace returns how long Dial keeps a session's QUIC connection open
+// after the session ends: three smoothed round trips, enough for the last
+// stream data and a loss recovery, bounded so that a missing RTT sample or a
+// slow path neither closes too early nor holds the connection open long.
+func closeConnGrace(smoothedRTT time.Duration) time.Duration {
+	return min(max(3*smoothedRTT, minCloseConnGrace), maxCloseConnGrace)
 }
 
 // Close cancels session establishment waiting for peer HTTP/3 settings.
