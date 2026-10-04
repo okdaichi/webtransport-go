@@ -3,7 +3,7 @@ module github.com/okdaichi/webtransport-go
 go 1.26.0
 
 require (
-	github.com/dunglas/httpsfv v1.1.0
+	github.com/dunglas/httpsfv v1.1.1
 	github.com/quic-go/quic-go v0.63.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.22.0
