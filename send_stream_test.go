@@ -3,6 +3,7 @@ package webtransport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -435,4 +436,74 @@ func TestSendStreamContextAlreadyCanceled(t *testing.T) {
 	require.ErrorAs(t, context.Cause(ctx), &strErr)
 	require.Equal(t, quic.StreamErrorCode(1337), strErr.ErrorCode)
 	require.False(t, strErr.Remote)
+}
+
+func TestSendStreamContextDoneWhenWriteFails(t *testing.T) {
+	sendStr, recvStr := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	ctx := str.Context()
+	recvStr.CancelRead(webtransportCodeToHTTPCode(7))
+
+	var writeErr error
+	for writeErr == nil {
+		_, writeErr = str.Write([]byte("foo"))
+		time.Sleep(time.Millisecond)
+	}
+
+	// No wait: the context is done by the time Write returns its error.
+	require.Error(t, ctx.Err())
+	require.ErrorIs(t, writeErr, context.Cause(ctx))
+}
+
+func TestSendStreamContextDoneWhenCanceled(t *testing.T) {
+	sendStr, _ := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	ctx := str.Context()
+
+	str.CancelWrite(7)
+
+	require.Error(t, ctx.Err())
+	require.ErrorIs(t, context.Cause(ctx), &StreamError{ErrorCode: 7})
+}
+
+func TestSendStreamContextSessionClosed(t *testing.T) {
+	sessErr := &SessionError{ErrorCode: 42, Message: "bye"}
+	for _, contextFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Context called first: %t", contextFirst), func(t *testing.T) {
+			sendStr, _ := newUniStreamPair(t)
+			str := newSendStream(sendStr, nil, nil, nil, func() {})
+			var ctx context.Context
+			if contextFirst {
+				ctx = str.Context()
+			}
+
+			str.closeWithSession(sessErr)
+
+			if !contextFirst {
+				ctx = str.Context()
+			}
+			require.Error(t, ctx.Err())
+			require.Equal(t, sessErr, context.Cause(ctx), "the session's close error, as Write returns it")
+			_, err := str.Write([]byte("foo"))
+			require.ErrorIs(t, err, sessErr)
+		})
+	}
+}
+
+func TestSendStreamWriteKeepsResetOutsideRange(t *testing.T) {
+	sendStr, recvStr := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	recvStr.CancelRead(1337)
+
+	var writeErr error
+	for writeErr == nil {
+		_, writeErr = str.Write([]byte("foo"))
+		time.Sleep(time.Millisecond)
+	}
+
+	// Write and the context's cause both still carry the QUIC reset.
+	var strErr *quic.StreamError
+	require.ErrorAs(t, writeErr, &strErr)
+	require.Equal(t, quic.StreamErrorCode(1337), strErr.ErrorCode)
+	require.ErrorAs(t, context.Cause(str.Context()), &strErr)
 }
