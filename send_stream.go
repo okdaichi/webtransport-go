@@ -51,6 +51,9 @@ type SendStream struct {
 	deadlineMu       sync.Mutex
 	writeDeadline    time.Time
 	deadlineNotifyCh chan struct{} // receives a value when deadline changes
+
+	ctxOnce sync.Once
+	ctx     context.Context // set by Context
 }
 
 func newSendStream(
@@ -299,8 +302,11 @@ func (s *SendStream) Close() error {
 // cancels the read-side of their stream.
 // The cancellation cause is set to the error that caused the stream to
 // close, or `context.Canceled` in case the stream is closed without error.
+// When the peer canceled the stream with a WebTransport error code, the cause
+// is a [StreamError] carrying that code, as Write would return it.
 func (s *SendStream) Context() context.Context {
-	return s.str.Context()
+	s.ctxOnce.Do(func() { s.ctx = streamContext(s.str.Context()) })
+	return s.ctx
 }
 
 // SetWriteDeadline sets the deadline for future Write calls

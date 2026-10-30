@@ -126,6 +126,35 @@ func (s *Stream) SetDeadline(t time.Time) error {
 	return errors.Join(err1, err2)
 }
 
+// streamContext returns a context with ctx's values that is canceled when ctx
+// is, with the cause converted by convertContextCause.
+func streamContext(ctx context.Context) context.Context {
+	out, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	if ctx.Err() != nil {
+		cancel(convertContextCause(context.Cause(ctx)))
+		return out
+	}
+	context.AfterFunc(ctx, func() { cancel(convertContextCause(context.Cause(ctx))) })
+	return out
+}
+
+// convertContextCause converts a QUIC stream error carrying a WebTransport
+// error code to a [StreamError], as maybeConvertStreamError does for Read and
+// Write. Any other cause, including a QUIC stream error with a code outside
+// the WebTransport range such as WTSessionGoneErrorCode, is returned as is, so
+// the cause still says why the stream ended.
+func convertContextCause(err error) error {
+	var strErr *quic.StreamError
+	if !errors.As(err, &strErr) {
+		return err
+	}
+	code, convErr := httpCodeToWebtransportCode(strErr.ErrorCode)
+	if convErr != nil {
+		return err
+	}
+	return &StreamError{ErrorCode: code, Remote: strErr.Remote}
+}
+
 func maybeConvertStreamError(err error) error {
 	if err == nil {
 		return nil
