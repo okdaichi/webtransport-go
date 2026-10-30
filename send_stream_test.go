@@ -3,6 +3,7 @@ package webtransport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -355,4 +356,154 @@ func TestSendStreamDataFlowControlUpdate(t *testing.T) {
 	_, err := io.ReadFull(recvStr, b)
 	require.NoError(t, err)
 	require.Equal(t, "hdrabcdefgh", string(b))
+}
+
+func TestSendStreamContextCause(t *testing.T) {
+	testCases := []struct {
+		name          string
+		quicErrorCode quic.StreamErrorCode
+		expectedErr   error
+	}{
+		{
+			name:          "WebTransport error code",
+			quicErrorCode: 0x52e5ac983162, // value taken from the draft, corresponds to 0xffffffff
+			expectedErr:   &StreamError{ErrorCode: StreamErrorCode(0xffffffff), Remote: true},
+		},
+		{
+			name:          "code outside the WebTransport range",
+			quicErrorCode: 1337,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sendStr, recvStr := newUniStreamPair(t)
+			str := newSendStream(sendStr, nil, nil, nil, func() {})
+			ctx := str.Context()
+			require.NoError(t, ctx.Err())
+
+			recvStr.CancelRead(tc.quicErrorCode)
+
+			select {
+			case <-ctx.Done():
+			case <-time.After(scaleDuration(5 * time.Second)):
+				t.Fatal("timeout waiting for the context to be canceled")
+			}
+			cause := context.Cause(ctx)
+			if tc.expectedErr == nil {
+				// kept as the QUIC stream error, so the cause still says why
+				var strErr *quic.StreamError
+				require.ErrorAs(t, cause, &strErr)
+				require.Equal(t, tc.quicErrorCode, strErr.ErrorCode)
+				require.True(t, strErr.Remote)
+				return
+			}
+			require.ErrorIs(t, cause, tc.expectedErr)
+			// Write reports the same error as the context.
+			_, err := str.Write([]byte("foo"))
+			require.ErrorIs(t, err, cause)
+		})
+	}
+}
+
+func TestSendStreamContextCauseLocalClose(t *testing.T) {
+	sendStr, _ := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	ctx := str.Context()
+
+	require.NoError(t, str.Close())
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(scaleDuration(5 * time.Second)):
+		t.Fatal("timeout waiting for the context to be canceled")
+	}
+	// Not a reset, so the cause is passed through as the QUIC stream has it.
+	require.Equal(t, context.Cause(sendStr.Context()), context.Cause(ctx))
+}
+
+func TestSendStreamContextAlreadyCanceled(t *testing.T) {
+	sendStr, _ := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	sendStr.CancelWrite(1337)
+	<-sendStr.Context().Done()
+
+	// The stream's context ended before Context was first called.
+	ctx := str.Context()
+
+	require.Error(t, ctx.Err(), "canceled right away, not on another goroutine")
+	var strErr *quic.StreamError
+	require.ErrorAs(t, context.Cause(ctx), &strErr)
+	require.Equal(t, quic.StreamErrorCode(1337), strErr.ErrorCode)
+	require.False(t, strErr.Remote)
+}
+
+func TestSendStreamContextDoneWhenWriteFails(t *testing.T) {
+	sendStr, recvStr := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	ctx := str.Context()
+	recvStr.CancelRead(webtransportCodeToHTTPCode(7))
+
+	var writeErr error
+	for writeErr == nil {
+		_, writeErr = str.Write([]byte("foo"))
+		time.Sleep(time.Millisecond)
+	}
+
+	// No wait: the context is done by the time Write returns its error.
+	require.Error(t, ctx.Err())
+	require.ErrorIs(t, writeErr, context.Cause(ctx))
+}
+
+func TestSendStreamContextDoneWhenCanceled(t *testing.T) {
+	sendStr, _ := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	ctx := str.Context()
+
+	str.CancelWrite(7)
+
+	require.Error(t, ctx.Err())
+	require.ErrorIs(t, context.Cause(ctx), &StreamError{ErrorCode: 7})
+}
+
+func TestSendStreamContextSessionClosed(t *testing.T) {
+	sessErr := &SessionError{ErrorCode: 42, Message: "bye"}
+	for _, contextFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Context called first: %t", contextFirst), func(t *testing.T) {
+			sendStr, _ := newUniStreamPair(t)
+			str := newSendStream(sendStr, nil, nil, nil, func() {})
+			var ctx context.Context
+			if contextFirst {
+				ctx = str.Context()
+			}
+
+			str.closeWithSession(sessErr)
+
+			if !contextFirst {
+				ctx = str.Context()
+			}
+			require.Error(t, ctx.Err())
+			require.Equal(t, sessErr, context.Cause(ctx), "the session's close error, as Write returns it")
+			_, err := str.Write([]byte("foo"))
+			require.ErrorIs(t, err, sessErr)
+		})
+	}
+}
+
+func TestSendStreamWriteKeepsResetOutsideRange(t *testing.T) {
+	sendStr, recvStr := newUniStreamPair(t)
+	str := newSendStream(sendStr, nil, nil, nil, func() {})
+	recvStr.CancelRead(1337)
+
+	var writeErr error
+	for writeErr == nil {
+		_, writeErr = str.Write([]byte("foo"))
+		time.Sleep(time.Millisecond)
+	}
+
+	// Write and the context's cause both still carry the QUIC reset.
+	var strErr *quic.StreamError
+	require.ErrorAs(t, writeErr, &strErr)
+	require.Equal(t, quic.StreamErrorCode(1337), strErr.ErrorCode)
+	require.ErrorAs(t, context.Cause(str.Context()), &strErr)
 }

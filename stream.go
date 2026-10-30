@@ -126,19 +126,29 @@ func (s *Stream) SetDeadline(t time.Time) error {
 	return errors.Join(err1, err2)
 }
 
+// toStreamError converts a QUIC stream reset to the [StreamError] carrying its
+// WebTransport error code. It fails for a code outside the WebTransport range.
+func toStreamError(streamErr *quic.StreamError) (*StreamError, error) {
+	errorCode, err := httpCodeToWebtransportCode(streamErr.ErrorCode)
+	if err != nil {
+		return nil, err
+	}
+	return &StreamError{ErrorCode: errorCode, Remote: streamErr.Remote}, nil
+}
+
+// maybeConvertStreamError converts a QUIC stream reset to a [StreamError]. For
+// a code outside the WebTransport range it returns an error that wraps both the
+// conversion error and the QUIC stream error, so the reset stays visible.
 func maybeConvertStreamError(err error) error {
 	if err == nil {
 		return nil
 	}
 	if streamErr, ok := errors.AsType[*quic.StreamError](err); ok {
-		errorCode, cerr := httpCodeToWebtransportCode(streamErr.ErrorCode)
+		wtErr, cerr := toStreamError(streamErr)
 		if cerr != nil {
-			return fmt.Errorf("stream reset, but failed to convert stream error %d: %w", streamErr.ErrorCode, cerr)
+			return fmt.Errorf("stream reset, but failed to convert stream error %d: %w (%w)", streamErr.ErrorCode, cerr, streamErr)
 		}
-		return &StreamError{
-			ErrorCode: errorCode,
-			Remote:    streamErr.Remote,
-		}
+		return wtErr
 	}
 	return err
 }
