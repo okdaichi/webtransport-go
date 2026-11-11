@@ -182,33 +182,42 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 		w.Header().Set(wtProtocolHeader, v)
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return nil, errors.New("webtransport: response writer doesn't implement http.Flusher")
-	}
 	httpStreamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
 		return nil, errors.New("webtransport: response writer doesn't implement http3.HTTPStreamer")
 	}
 
-	str := httpStreamer.HTTPStream()
-	sessID := sessionID(str.StreamID())
 	fc := connCtx.config.sessionFlowControl(settings)
 
 	// Multiple sessions on one HTTP/3 connection require WebTransport flow control.
+	// The reservation makes this check atomic with the registration of the session
+	// below, without holding a lock while the response is sent.
 	if !fc.Enabled {
-		sessMgr.mx.Lock()
-		for _, entry := range sessMgr.sessions {
-			if entry.Session != nil {
-				sessMgr.mx.Unlock()
-				str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				return nil, errors.New("webtransport: multiple sessions require flow control")
+		if !sessMgr.reserveSingleSession() {
+			// The specification requires excessive CONNECT streams to be reset with
+			// H3_REQUEST_REJECTED. Taking over the stream before WriteHeader was called
+			// makes sure that no response is sent.
+			str, err := httpStreamer.HTTPStream()
+			if err != nil {
+				return nil, fmt.Errorf("webtransport: take over the request stream: %w", err)
 			}
+			str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+			str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+			return nil, errors.New("webtransport: multiple sessions require flow control")
 		}
-		sessMgr.mx.Unlock()
+		defer sessMgr.releaseSingleSession()
 	}
 
+	// Since quic-go v0.65.0, HTTPStream doesn't send an implicit 200 response, and
+	// WriteHeader must not be called after taking over the stream: write the status
+	// first, and HTTPStream sends the header. Streams the client opens for this
+	// session before AddSession is called are buffered by the session manager.
+	w.WriteHeader(http.StatusOK)
+	str, err := httpStreamer.HTTPStream()
+	if err != nil {
+		return nil, fmt.Errorf("webtransport: take over the request stream: %w", err)
+	}
+	sessID := sessionID(str.StreamID())
 	sess := newSession(
 		context.WithoutCancel(r.Context()),
 		sessID,
@@ -218,8 +227,5 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, er
 		fc,
 	)
 	sessMgr.AddSession(sessID, sess)
-
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 	return sess, nil
 }

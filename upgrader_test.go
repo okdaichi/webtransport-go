@@ -93,15 +93,6 @@ func TestUpgraderErrorPaths(t *testing.T) {
 		require.Contains(t, err.Error(), "Settingser")
 	})
 
-	t.Run("missing Flusher does not commit response", func(t *testing.T) {
-		req := newUpgradeRequestWithConnContext(true)
-		w := &settingserOnlyResponseWriter{}
-		_, err := u.Upgrade(w, req)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "Flusher")
-		require.Zero(t, w.statusCode)
-	})
-
 	t.Run("missing HTTPStreamer does not commit response", func(t *testing.T) {
 		req := newUpgradeRequestWithConnContext(true)
 		w := &settingserFlusherResponseWriter{}
